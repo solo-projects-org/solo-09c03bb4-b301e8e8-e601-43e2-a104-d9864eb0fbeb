@@ -66,6 +66,8 @@ TP_DB_PATH=/tmp/tp.sqlite3 uvicorn app.api:app --reload
 | `POST` | `/samples/{sample_no}/reports` | 提交/更正一张化验单的一个修订 |
 | `GET` | `/summary?month=YYYY-MM&threshold=T` | 月度上下界计数、分母与待复测名单 |
 | `GET` | `/retest?month=YYYY-MM` | 该月待复测水样号 |
+| `POST` | `/band-checks` | 核对各浓度档申报数能否由当月入选水样支撑；可填满时出回执 |
+| `GET` | `/band-checks/{check_id}` | 凭回执号查原分档，并判断回执是否仍可用 |
 | `GET` | `/healthz` | 健康检查 |
 
 ### 示例
@@ -90,6 +92,51 @@ curl -X POST localhost:8000/samples/S-001/reports \
 curl 'localhost:8000/summary?month=2026-11&threshold=20'
 ```
 
+### 分档核验（`/band-checks`）
+
+月报送审前，统计员需要确认各浓度档的申报数能由同一批水样支撑。请求给出采样月、
+最多 12 条严格递增的正整数分界线和各档非负整数申报数：
+
+```bash
+curl -X POST localhost:8000/band-checks \
+  -H 'Content-Type: application/json' \
+  -d '{"month":"2026-11","boundaries":[10,20,50],"counts":[1,2,1,1]}'
+```
+
+- 分界线把整数浓度从 0 起切成左闭右开的档：`[0,10)`、`[10,20)`、`[20,50)`、
+  `[50,+inf)`；`counts` 必须恰好 `len(boundaries)+1` 项，末档无上限。
+- 入选水样＝该采样月下现行区间非空的水样，与 `/summary` 的 `denominator` 同源；
+  待复测（交集为空）与未出单（无化验单）水样排除在外。判定在同一已提交快照内完成。
+- 每个入选水样按其现行整数区间可落在一个或多个连续档（区间内任一整数所在档）。
+- 三种 `outcome`：
+
+| outcome | 含义 | 产物 |
+| --- | --- | --- |
+| `filled` | 申报总数＝入选水样数，且能逐样本分档、各档恰好达到申报数 | `check_id` 回执 + `assignments` 逐样本分档 |
+| `count_mismatch` | 总数不符 | `difference = eligible_total - declared_total`，不存回执 |
+| `infeasible` | 总数相符但无法分档 | `shortfall`：容量不足的那段连续档、其容量、只能落在这段的水样号，不存回执 |
+
+`infeasible` 的定位依据是区间结构的 Hall 条件：若存在某段连续档 `[i,j]`，其容量
+小于「只能落在这段」的水样数，则必然无法分档；服务报告最短的这类段落。示例：
+
+```json
+{"outcome":"infeasible","declared_total":4,"eligible_total":4,"difference":0,
+ "shortfall":{"first_band":1,"last_band":2,"notation":"[0, 20)",
+              "capacity":2,"sample_count":3,"deficit":1,
+              "sample_nos":["L1","L2","M1"]}}
+```
+
+凭回执号查询：
+
+```bash
+curl 'localhost:8000/band-checks/BC-202611-0001'
+```
+
+回执保存了出单时每个入选水样的可落档区间快照。`usable=true` 仅当当月入选水样集合
+与每个水样的可落档区间**仍与核验时一致**；否则 `recheck_required=true`，并在
+`changes.added / removed / changed` 中列出差异（新增、失效、可落档区间移动），提示重核。
+区间收窄但可落档不变时，回执仍然可用。回执按 `BC-YYYYMM-NNNN` 编号，按月递增。
+
 ## 数据结构
 
 - `samples`：水样号、固定采样月；
@@ -97,7 +144,9 @@ curl 'localhost:8000/summary?month=2026-11&threshold=20'
 - `sample_state`：每水样一行，`ok` 保存现行交集，`retest` 表示空交集；
 - `monthly_summary`：每月总样本数、分母、待复测数；
 - `monthly_lower_hist` / `monthly_max_hist`：按区间下端点 / 最大可达整数分桶的计数，
-  使任意警戒线的上下界计数为一次索引范围求和，无需扫描水样。
+  使任意警戒线的上下界计数为一次索引范围求和，无需扫描水样；
+- `band_checks`：分档核验回执，保存按月编号、分界线、申报数与总数；
+- `band_check_samples`：回执内逐水样的落档、可落档区间快照与出单时现行区间。
 
 摘要采用增量维护：每个水样对月度聚合最多贡献两条直方图记录，更正时先撤销旧贡献再加入
 新贡献，因此只触及目标水样。
@@ -113,7 +162,11 @@ TP_DB_PATH=/tmp/unused.sqlite3 pytest tests -q
 更正局部性（仅重算目标水样）、跨月隔离、写入回滚与恢复、读快照一致性、多线程并发聚合一致性，
 以及增量聚合与暴力重算的随机对拍。
 
-当前共 33 个测试，全部通过。
+分档核验另有：分档代数（左闭右开、末档无上限）、EDF 分档与 Hall 容量不足判定对穷举
+全排列的对拍、三种 outcome、回执编号、回执可用性与更正后的重核判定、并发取号唯一性、
+请求校验（非递增/超 12 条/浮点/布尔/负数）与 OpenAPI 可试性。
+
+当前共 56 个测试，全部通过。
 
 ## 已知限制
 

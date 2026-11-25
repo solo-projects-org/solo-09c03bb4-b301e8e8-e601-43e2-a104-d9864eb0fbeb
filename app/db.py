@@ -81,6 +81,31 @@ CREATE TABLE IF NOT EXISTS monthly_max_hist (
     sample_count INTEGER NOT NULL CHECK (sample_count > 0),
     PRIMARY KEY (month, value)
 );
+
+-- Immutable receipts of a filled band check, with the sample snapshot used to
+-- decide whether the receipt still matches the current committed state.
+CREATE TABLE IF NOT EXISTS band_checks (
+    check_id      TEXT PRIMARY KEY,
+    month         TEXT NOT NULL,
+    boundaries    TEXT NOT NULL,
+    counts        TEXT NOT NULL,
+    total_samples INTEGER NOT NULL CHECK (total_samples >= 0),
+    created_at    TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_band_checks_month ON band_checks(month);
+
+CREATE TABLE IF NOT EXISTS band_check_samples (
+    check_id        TEXT NOT NULL REFERENCES band_checks(check_id),
+    sample_no       TEXT NOT NULL,
+    band            INTEGER NOT NULL CHECK (band >= 1),
+    first_band      INTEGER NOT NULL CHECK (first_band >= 1),
+    last_band       INTEGER NOT NULL CHECK (last_band >= first_band),
+    lower           INTEGER NOT NULL CHECK (lower >= 0),
+    upper           INTEGER NOT NULL CHECK (upper >= lower),
+    upper_inclusive INTEGER NOT NULL CHECK (upper_inclusive IN (0, 1)),
+    CHECK (band BETWEEN first_band AND last_band),
+    PRIMARY KEY (check_id, sample_no)
+);
 """
 
 

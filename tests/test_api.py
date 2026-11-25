@@ -407,4 +407,6 @@ def test_openapi_paths_are_complete(client):
         "/samples/{sample_no}/reports",
         "/summary",
         "/retest",
+        "/band-checks",
+        "/band-checks/{check_id}",
     }
